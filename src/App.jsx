@@ -1,24 +1,20 @@
 import { useState, useRef, useEffect } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hub Health — v1
+// Hub Health — v2 (PATCH 03)
 //
 // Novidades desta versão:
-//   1. Rebranding Hub Trust → Hub Health.
-//   2. Landing page real antes do CNPJ — vende o check-up antes de pedir dado.
-//   3. Captura de lead persistida no PRÓPRIO backend (/v1/leads) — sem
-//      depender de serviço externo, sem console.log em produção.
-//   4. Checkout real via Stripe Payment Link — substitui o fake-door.
-//      "No fake monetization": o clique leva a um checkout hospedado de
-//      verdade. Ativação chega pelo webhook do Stripe no backend.
+//   1. Contrato alinhado ao schema exato do backend: state{label,score,
+//      confidence}, sources[], findings[{source,urgency,detail}],
+//      actions[{title,impact,time,cta,url}], upsell{}.
+//   2. Score deixou de ser a manchete — o status do negócio ("Em Risco",
+//      "Atenção", "Protegida") é o texto principal; o score vira badge
+//      secundário, pequeno, ao lado.
+//   3. Checkout iniciado pelo backend (POST /v1/checkout) — não mais
+//      construído só no client. O backend salva o lead e devolve a URL.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const API_BASE = "https://hub-trust-backend-production.up.railway.app";
-
-// ← Cole aqui o Payment Link do Stripe (Stripe Dashboard → Payment Links →
-// Create → plano recorrente US$15/mês → copiar link). Leva ~3 minutos,
-// não precisa de código nenhum do seu lado.
-const STRIPE_PAYMENT_LINK = "";
 
 function getUTM() {
   if (typeof window === "undefined") return {};
@@ -30,19 +26,26 @@ function getUTM() {
   return utm;
 }
 
-async function capturarLead(dados) {
+async function registrarLead(dados) {
   const payload = { ...dados, utm: getUTM() };
   if (!API_BASE) { console.log("EVENTO (backend não configurado):", payload); return true; }
   try {
     const r = await fetch(`${API_BASE}/v1/leads`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
     return r.ok;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
+}
+
+async function iniciarCheckout(dados) {
+  const payload = { ...dados, utm: getUTM() };
+  if (!API_BASE) { console.log("CHECKOUT (backend não configurado):", payload); return { ok: false, checkoutUrl: null }; }
+  try {
+    const r = await fetch(`${API_BASE}/v1/checkout`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    return await r.json();
+  } catch { return { ok: false, checkoutUrl: null }; }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -76,71 +79,78 @@ async function fetchAuditReal(digits, addLog) {
     addLog("✅", "Resposta recebida");
     return contrato;
   } catch (e) {
-    addLog("⚠️", `Backend indisponível (${e.message}) — caindo para modo demo`);
+    addLog("⚠️", `Backend indisponível (${e.message}) — caindo para modo simulação`);
     return null;
   }
 }
 
+// ── Fallback DEMO — mesmo contrato, dados simulados, sempre rotulados ──────
 const DEMO_CASOS = {
   "69210953000180": {
     razaoSocial: "TOBIAS MELO SERVICOS LTDA", situacao: "ATIVA", porte: "ME", regime: "SIMPLES_NACIONAL",
-    cnae: { codigo: "74.90-1/04", descricao: "Atividades de intermediação e agenciamento de serviços" },
+    cnae: { cod: "74.90-1/04", desc: "Atividades de intermediação e agenciamento de serviços" },
     municipio: "Goiânia", uf: "GO", capitalSocial: 80000,
     socios: [{ nome: "RAPHAEL TOBIAS DE MELO", qualificacao: "Sócio-Administrador" }, { nome: "AUGUSTO SILVA MELO", qualificacao: "Sócio" }],
     findings: [
-      { id: "pgfn", source: "Certidão PGFN/RFB", icon: "📋", severity: "CRITICA", detail: "Débito ativo: R$ 18.430,00 — IRPJ/CSLL referente 2022/2023. Inscrição em Dívida Ativa.", dueDate: "31/12/2023", evidenceSource: "PREVIEW_DEMO" },
-      { id: "fgts", source: "FGTS / CRF", icon: "🔒", severity: "ALTA", detail: "CRF vencido desde 14/04/2026. Competências mar/2026 e abr/2026 em aberto.", dueDate: "14/04/2026", evidenceSource: "PREVIEW_DEMO" },
-      { id: "cndt", source: "CNDT (Trabalhista)", icon: "⚖️", severity: "ALTA", detail: "Débito trabalhista: R$ 6.200,00 — Reclamação proc. 0001234-45.2025.5.18.0001.", dueDate: null, evidenceSource: "PREVIEW_DEMO" },
+      { source: "Certidão PGFN/RFB", urgency: "critical", detail: "Débito ativo: R$ 18.430,00 — IRPJ/CSLL referente 2022/2023. Inscrição em Dívida Ativa.", preview: true },
+      { source: "FGTS / CRF", urgency: "high", detail: "CRF vencido desde 14/04/2026. Competências mar/2026 e abr/2026 em aberto.", preview: true },
+      { source: "CNDT (Trabalhista)", urgency: "high", detail: "Débito trabalhista: R$ 6.200,00 — Reclamação proc. 0001234-45.2025.5.18.0001.", preview: true },
     ],
   },
 };
+
+const _URGENCIA_IMPACTO = { critical: "Muito alto", high: "Alto", medium: "Médio" };
+const _URGENCIA_TEMPO = { critical: "5 minutos", high: "10 minutos", medium: "15 minutos" };
+function guidedUrlPorFonte(nome) {
+  const m = { "Certidão PGFN/RFB": "https://www.regularize.pgfn.gov.br", "FGTS / CRF": "https://consulta-crf.caixa.gov.br", "CNDT (Trabalhista)": "https://certidao.tst.jus.br" };
+  return m[nome] || "#";
+}
 
 function toDemoContract(cnpj, digits) {
   const base = DEMO_CASOS[digits];
   const temDebito = parseInt(digits[7]) % 2 === 0;
   const findings = base ? base.findings : (temDebito ? [
-    { id: "pgfn", source: "Certidão PGFN/RFB", icon: "📋", severity: "CRITICA", detail: `Débito ativo: R$ ${(parseInt(digits.slice(0,5))%50000+5000).toLocaleString("pt-BR")},00 — IRPJ em aberto.`, dueDate: null, evidenceSource: "PREVIEW_DEMO" },
+    { source: "Certidão PGFN/RFB", urgency: "critical", detail: `Débito ativo: R$ ${(parseInt(digits.slice(0,5))%50000+5000).toLocaleString("pt-BR")},00 — IRPJ em aberto.`, preview: true },
   ] : []);
   const company = base || {
     razaoSocial: `EMPRESA ${digits.slice(0,3)}.${digits.slice(3,6)} LTDA`, situacao: "ATIVA",
     porte: parseInt(digits[5]) % 10 < 7 ? "ME" : "EPP", regime: "SIMPLES_NACIONAL",
-    cnae: { codigo: "62.01-5/01", descricao: "Desenvolvimento de programas de computador sob encomenda" },
+    cnae: { cod: "62.01-5/01", desc: "Desenvolvimento de programas de computador sob encomenda" },
     municipio: "São Paulo", uf: "SP", capitalSocial: 50000,
     socios: [{ nome: `SÓCIO ${digits.slice(0,6)}`, qualificacao: "Sócio-Administrador" }],
   };
 
-  const nextActions = findings.map(f => ({ id: `resolver_${f.id}`, label: `Resolver ${f.source}`, url: guidedUrl(f.id), priority: f.severity }));
-  const guiadas = ["pgfn","fgts","cndt","esocial","dctf"].filter(id => !findings.find(f=>f.id===id));
-  guiadas.forEach(id => nextActions.push({ id: `conectar_${id}`, label: `Verificar ${nomeFonte(id)} manualmente`, url: guidedUrl(id), priority: "MEDIA" }));
+  const actions = findings.map(f => ({ title: `Resolver ${f.source}`, impact: _URGENCIA_IMPACTO[f.urgency], time: _URGENCIA_TEMPO[f.urgency], cta: "Resolver agora", url: guidedUrlPorFonte(f.source) }));
+  const nomesComFinding = findings.map(f => f.source);
+  const guiadas = [
+    ["Certidão PGFN/RFB", "https://www.regularize.pgfn.gov.br"], ["FGTS / CRF", "https://consulta-crf.caixa.gov.br"],
+    ["CNDT (Trabalhista)", "https://certidao.tst.jus.br"], ["eSocial", "https://esocial.gov.br"], ["DCTFWeb", "https://cav.receita.fazenda.gov.br"],
+  ].filter(([nome]) => !nomesComFinding.includes(nome));
+  guiadas.forEach(([nome, url]) => actions.push({ title: `Verificar ${nome} manualmente`, impact: _URGENCIA_IMPACTO.medium, time: _URGENCIA_TEMPO.medium, cta: "Verificar agora", url }));
 
-  const coverage = [
-    { id: "rfb", name: "Receita Federal", tier: "AUTOMATIC", status: "OK", ok: true, checkedAt: "agora (demo)" },
-    { id: "ceis", name: "CEIS / CNEP", tier: "AUTOMATIC", status: "OK", ok: true, checkedAt: "agora (demo)" },
-    ...["pgfn","fgts","cndt","esocial","dctf"].map(id => ({ id, name: nomeFonte(id), tier: "GUIDED", status: findings.find(f=>f.id===id) ? "SIMULATED" : "NOT_CONNECTED", ok: findings.find(f=>f.id===id) ? false : null, guidedUrl: guidedUrl(id) })),
+  const sources = [
+    { id: "rfb", name: "Receita Federal", type: "automatic", status: "ok", detail: "Situação cadastral ATIVA (simulação).", guidedUrl: null },
+    { id: "ceis", name: "CEIS / CNEP", type: "automatic", status: "ok", detail: "Nenhuma sanção encontrada (simulação).", guidedUrl: null },
+    ...["Certidão PGFN/RFB","FGTS / CRF","CNDT (Trabalhista)","eSocial","DCTFWeb"].map(nome => ({
+      id: nome, name: nome, type: "guided",
+      status: nomesComFinding.includes(nome) ? "critical" : "pending",
+      detail: nomesComFinding.includes(nome) ? "Simulação — pendência encontrada." : "Fonte não conectada — verificar manualmente.",
+      guidedUrl: guidedUrlPorFonte(nome) !== "#" ? guidedUrlPorFonte(nome) : "https://esocial.gov.br",
+    })),
   ];
 
   let score = 100;
-  findings.forEach(f => { score -= f.severity === "CRITICA" ? 25 : f.severity === "ALTA" ? 15 : 8; });
+  findings.forEach(f => { score -= f.urgency === "critical" ? 25 : f.urgency === "high" ? 15 : 8; });
   score = Math.max(0, Math.min(100, score));
-  const riskLevel = score >= 80 ? "PROTEGIDA" : score >= 60 ? "ATENCAO" : "EM_RISCO";
-  const label = { PROTEGIDA: "Protegida", ATENCAO: "Atenção", EM_RISCO: "Em Risco" }[riskLevel];
+  const label = score >= 80 ? "Protegida" : score >= 60 ? "Atenção" : "Em Risco";
 
   return {
-    cnpj: digits, cnpjFormatted: cnpj, mode: "DEMO", auditedAt: new Date().toISOString(),
-    company, verdict: { trustScore: score, confidence: 75, riskLevel, label },
-    findings, nextActions, sourcesCoverage: coverage,
-    premium: { monitoringAvailable: true, priceMonthly: 15, currency: "USD" },
+    cnpj: digits, mode: "DEMO", auditedAt: new Date().toISOString(),
+    company: { cnpj, ...company },
+    state: { label, score, confidence: 75 },
+    sources, findings, actions,
+    upsell: { plan: "fundador", message: "Posso avisar quando algo mudar", price: "R$ 19,90/mês" },
   };
-}
-
-function nomeFonte(id) {
-  return { pgfn: "Certidão PGFN/RFB", fgts: "FGTS / CRF", cndt: "CNDT (Trabalhista)", esocial: "eSocial", dctf: "DCTFWeb" }[id] || id;
-}
-function guidedUrl(id) {
-  return {
-    pgfn: "https://www.regularize.pgfn.gov.br", fgts: "https://consulta-crf.caixa.gov.br",
-    cndt: "https://certidao.tst.jus.br", esocial: "https://esocial.gov.br", dctf: "https://cav.receita.fazenda.gov.br",
-  }[id] || "#";
 }
 
 const T = {
@@ -158,12 +168,6 @@ const Card = ({ children, style={} }) => (
 const Chip = ({ label, color=T.muted }) => (
   <span style={{ fontSize:10, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", padding:"3px 10px", borderRadius:99, background:color+"20", color, border:`1px solid ${color}35`, whiteSpace:"nowrap" }}>{label}</span>
 );
-const Dot = ({ color, pulse }) => (
-  <span style={{ position:"relative", display:"inline-flex", width:10, height:10, flexShrink:0 }}>
-    {pulse && <span style={{ position:"absolute", inset:0, borderRadius:"50%", background:color, opacity:.3, animation:"ping 1.5s ease-in-out infinite" }} />}
-    <span style={{ position:"absolute", inset:1, borderRadius:"50%", background:color, boxShadow:`0 0 5px ${color}88` }} />
-  </span>
-);
 const Logo = ({ size=28 }) => (
   <div style={{ width:size, height:size, borderRadius:size*.28, background:"linear-gradient(135deg,#14B8A6,#0EA5E9)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:900, fontSize:size*.5, color:"#fff", flexShrink:0 }}>H</div>
 );
@@ -171,72 +175,222 @@ const Wordmark = ({ small }) => (
   <span style={{ fontWeight:900, fontSize:small?15:20, letterSpacing:"-.03em" }}>Hub<span style={{ color:T.accent }}>Health</span></span>
 );
 
-function TrustRing({ score, confidence, label, animated, size=148 }) {
-  const r=size*.42, cx=size/2, cy=size/2, sw=size*.052;
-  const circ=2*Math.PI*r;
-  const color = score>=80?T.success:score>=60?T.warning:T.danger;
+const urgColor = { critical:T.danger, high:T.warning, medium:T.accent };
+const urgLabel = { critical:"Crítico", high:"Alto", medium:"Médio" };
+const stateColor = { "Protegida":T.success, "Atenção":T.warning, "Em Risco":T.danger };
+const stateIcon = { "Protegida":"🟢", "Atenção":"🟡", "Em Risco":"🔴" };
+
+// ── Landing ──────────────────────────────────────────────────────────────
+// ── HeroMap — cena de rede viva sobre o Brasil ──────────────────────────────
+// SVG + CSS puro, sem canvas/vídeo/imagem externa. Pontos verdes pulsam de
+// forma assíncrona, com glow real via filtro SVG (feGaussianBlur), textura
+// de fundo com pontinhos estáticos, e linhas convergindo para o selo "H".
+// Respeita prefers-reduced-motion suavizando a animação.
+const BR_PONTOS = [
+  { nome:"Manaus", x:88, y:78 },
+  { nome:"Belém", x:172, y:64 },
+  { nome:"Fortaleza", x:248, y:82 },
+  { nome:"Recife", x:274, y:122 },
+  { nome:"Salvador", x:246, y:168 },
+  { nome:"Brasília", x:188, y:188, hub:true },
+  { nome:"Belo Horizonte", x:212, y:214 },
+  { nome:"Rio de Janeiro", x:222, y:250 },
+  { nome:"São Paulo", x:194, y:256 },
+  { nome:"Curitiba", x:178, y:280 },
+  { nome:"Porto Alegre", x:162, y:316 },
+];
+const BRASIL_PATH = "M 96 40 C 130 30, 175 34, 205 46 C 235 52, 262 66, 278 90 C 292 110, 296 132, 282 150 C 296 166, 290 188, 272 196 C 280 216, 268 236, 248 244 C 250 264, 236 282, 216 288 C 214 306, 198 322, 178 324 C 162 330, 144 322, 136 306 C 118 302, 106 286, 108 268 C 90 260, 80 242, 86 224 C 68 214, 60 194, 70 176 C 56 162, 54 140, 68 124 C 60 106, 68 86, 86 76 C 82 60, 86 46, 96 40 Z";
+
+// Pontinhos decorativos fixos (textura de "rede" no fundo do mapa) — posições
+// pseudo-aleatórias mas determinísticas, geradas uma vez.
+function gerarTextura(n, seed) {
+  const pts = [];
+  let s = seed;
+  const rand = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+  for (let i = 0; i < n; i++) pts.push({ x: 30 + rand()*280, y: 30 + rand()*300, r: 0.6 + rand()*1 });
+  return pts;
+}
+const TEXTURA = gerarTextura(38, 7);
+
+function HeroMap() {
+  const hub = BR_PONTOS.find(p => p.hub);
   return (
-    <div style={{ position:"relative", width:size, height:size, flexShrink:0 }}>
-      <svg width={size} height={size} style={{ transform:"rotate(-90deg)" }}>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke={T.border} strokeWidth={sw}/>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={animated?circ-(score/100)*circ:circ} style={{ transition:"stroke-dashoffset 1.6s cubic-bezier(.4,0,.2,1)" }}/>
+    <div style={{ position:"relative", width:"100%", maxWidth:380, margin:"0 auto", aspectRatio:"1/1.05" }} aria-hidden="true">
+      <style>{`
+        @keyframes hmPulseDot { 0%,100%{ transform:scale(1); opacity:.9 } 50%{ transform:scale(1.9); opacity:.2 } }
+        @keyframes hmGlowCenter { 0%,100%{ opacity:.4; transform:scale(1) } 50%{ opacity:.8; transform:scale(1.15) } }
+        @keyframes hmLineFade { 0%,100%{ opacity:.1 } 50%{ opacity:.4 } }
+        @keyframes hmTwinkle { 0%,100%{ opacity:.15 } 50%{ opacity:.5 } }
+        @media (prefers-reduced-motion: reduce) {
+          .hm-dot-pulse, .hm-glow, .hm-line, .hm-twinkle { animation: none !important; opacity: .4 !important; }
+        }
+      `}</style>
+      <svg viewBox="0 0 340 340" width="100%" height="100%" style={{ overflow:"visible" }}>
+        <defs>
+          <linearGradient id="hmGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#14B8A6"/><stop offset="100%" stopColor="#0EA5E9"/>
+          </linearGradient>
+          <filter id="hmBlur" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="3.2"/>
+          </filter>
+          <filter id="hmBlurBig" x="-100%" y="-100%" width="300%" height="300%">
+            <feGaussianBlur stdDeviation="7"/>
+          </filter>
+        </defs>
+
+        <path d={BRASIL_PATH} fill={T.success+"0a"} stroke={T.success+"30"} strokeWidth="1.2"/>
+
+        {TEXTURA.map((p,i)=>(
+          <circle key={"t"+i} className="hm-twinkle" cx={p.x} cy={p.y} r={p.r} fill={T.success} opacity=".25"
+            style={{ animation:`hmTwinkle ${2.6+(i%6)*0.5}s ease-in-out ${i*0.18}s infinite` }}/>
+        ))}
+
+        {BR_PONTOS.filter(p=>!p.hub).map((p,i)=>(
+          <line key={"l"+i} className="hm-line" x1={hub.x} y1={hub.y} x2={p.x} y2={p.y}
+            stroke={T.success} strokeWidth="0.8" opacity=".18"
+            style={{ animation:`hmLineFade ${3.4+ (i%4)*0.6}s ease-in-out ${i*0.31}s infinite` }}/>
+        ))}
+
+        {BR_PONTOS.filter(p=>!p.hub).map((p,i)=>(
+          <g key={"d"+i}>
+            <circle className="hm-dot-pulse" cx={p.x} cy={p.y} r="9" fill={T.success} filter="url(#hmBlur)"
+              style={{ transformOrigin:`${p.x}px ${p.y}px`, animation:`hmPulseDot ${2.2+(i%5)*0.35}s ease-in-out ${i*0.42}s infinite` }}/>
+            <circle cx={p.x} cy={p.y} r="2.6" fill="#D1FFEB"/>
+          </g>
+        ))}
+
+        <circle className="hm-glow" cx={hub.x} cy={hub.y} r="30" fill={T.accent} opacity=".35" filter="url(#hmBlurBig)"
+          style={{ transformOrigin:`${hub.x}px ${hub.y}px`, animation:"hmGlowCenter 4s ease-in-out infinite" }}/>
+        <circle cx={hub.x} cy={hub.y} r="13" fill="url(#hmGrad)"/>
+        <text x={hub.x} y={hub.y+4.5} textAnchor="middle" fontSize="13" fontWeight="900" fill="#031018">H</text>
       </svg>
-      <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2 }}>
-        <span style={{ fontSize:size*.24, fontWeight:900, color, fontVariantNumeric:"tabular-nums", lineHeight:1 }}>{score}</span>
-        <span style={{ fontSize:size*.075, color:T.sub, textTransform:"uppercase", letterSpacing:"0.08em" }}>Health Score</span>
-        <span style={{ fontSize:size*.07, color, fontWeight:700, marginTop:2 }}>{label}</span>
-        <span style={{ fontSize:size*.065, color:T.muted, marginTop:3 }}>Confiança {confidence}%</span>
+    </div>
+  );
+}
+
+// ── Cards flutuantes de fontes verificadas — prova de valor ao lado do mapa
+function LiveCheckCard({ nome, status, detalhe }) {
+  const ok = status === "ok";
+  const color = ok ? T.success : T.warning;
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12 }}>
+      <span style={{ fontSize:16, color }}>{ok ? "✓" : "!"}</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:10, fontWeight:800, letterSpacing:"0.06em", textTransform:"uppercase", color:T.muted }}>{nome}</div>
+        <div style={{ fontSize:12, fontWeight:700, color }}>{detalhe}</div>
       </div>
     </div>
   );
 }
 
-// ── Landing — vende o check-up antes de pedir o CNPJ ────────────────────────
+const NAV_LINKS = [
+  ["Como funciona", "#como-funciona"],
+  ["Planos", "#planos"],
+  ["Recursos", "#recursos"],
+];
+
 function ScreenLanding({ onStart }) {
   return (
     <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'Inter',-apple-system,sans-serif" }}>
-      <style>{`@keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}`}</style>
-      <div style={{ maxWidth:520, margin:"0 auto", padding:"48px 24px 60px", animation:"up .5s ease both" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:56 }}>
-          <Logo/>
-          <div>
-            <Wordmark/>
-            <div style={{ fontSize:10, color:T.muted, letterSpacing:"0.12em", textTransform:"uppercase" }}>Check-up de Saúde Empresarial</div>
+      <style>{`
+        @keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+        .hh-nav-links{ display:none; }
+        @media (min-width: 760px){ .hh-nav-links{ display:flex; } }
+      `}</style>
+
+      {/* Nav */}
+      <div style={{ borderBottom:`1px solid ${T.border}` }}>
+        <div style={{ maxWidth:960, margin:"0 auto", padding:"14px 20px", display:"flex", alignItems:"center", gap:20 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <Logo/><Wordmark/>
           </div>
+          <div className="hh-nav-links" style={{ gap:24, flex:1 }}>
+            {NAV_LINKS.map(([label,href])=>(
+              <a key={label} href={href} style={{ fontSize:13, color:T.sub, textDecoration:"none", fontWeight:600 }}>{label}</a>
+            ))}
+          </div>
+          <div style={{ flex:1 }}/>
+          <button onClick={onStart} style={{ marginLeft:"auto", padding:"9px 16px", borderRadius:10, border:`1px solid ${T.success}`, background:"transparent", color:T.success, fontWeight:700, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>
+            Fazer check-up →
+          </button>
+        </div>
+      </div>
+
+      <div style={{ maxWidth:520, margin:"0 auto", padding:"40px 24px 60px", animation:"up .5s ease both" }}>
+
+        <div style={{ display:"inline-flex", alignItems:"center", gap:8, padding:"6px 14px", borderRadius:99, background:T.success+"14", border:`1px solid ${T.success}35`, marginBottom:20 }}>
+          <span style={{ width:7, height:7, borderRadius:"50%", background:T.success }}/>
+          <span style={{ fontSize:11, fontWeight:800, letterSpacing:"0.06em", textTransform:"uppercase", color:T.success }}>O Guardian da sua empresa</span>
         </div>
 
-        <div style={{ fontWeight:900, fontSize:32, lineHeight:1.15, letterSpacing:"-.03em", marginBottom:16 }}>
-          Sua empresa está saudável — <span style={{ color:T.accent }}>ou só parece estar?</span>
+        <div style={{ fontWeight:900, fontSize:34, lineHeight:1.15, letterSpacing:"-.03em", marginBottom:16 }}>
+          Sua empresa está saudável<span style={{ color:T.sub }}>…</span><br/>
+          <span style={{ color:T.success }}>ou só parece estar?</span>
         </div>
-        <div style={{ fontSize:16, color:T.sub, lineHeight:1.7, marginBottom:32 }}>
-          Um check-up gratuito que cruza sua empresa direto com a Receita Federal e o Portal da Transparência,
-          mostra o que está pendente, o que fazer agora — e continua de olho depois que você fechar essa aba.
+        <div style={{ fontSize:16, color:T.sub, lineHeight:1.7, marginBottom:28 }}>
+          Monitoramos continuamente as principais informações da sua empresa e alertamos você
+          antes que pequenos problemas virem grandes prejuízos.
         </div>
 
-        <div style={{ display:"grid", gap:12, marginBottom:32 }}>
+        <button onClick={onStart} style={{ width:"100%", padding:"16px", borderRadius:14, border:"none", background:`linear-gradient(135deg, ${T.success}, ${T.accent})`, color:"#031018", fontWeight:800, fontSize:16, cursor:"pointer", marginBottom:10 }}>
+          Fazer check-up gratuito →
+        </button>
+        <a href="#demonstracao" style={{ display:"block", textAlign:"center", fontSize:13, color:T.sub, textDecoration:"underline", marginBottom:28 }}>
+          Ver exemplo de resultado ↓
+        </a>
+
+        <div style={{ display:"flex", flexWrap:"wrap", gap:16, justifyContent:"center", marginBottom:40 }}>
           {[
-            ["🔍","Diagnóstico em 15 segundos","Situação cadastral, sanções, pendências — sem jargão."],
-            ["🎯","Próxima ação, não só dado bruto","Cada achado vem com o link exato pra resolver."],
-            ["🔔","Monitoramento contínuo (opcional)","Avisamos quando algo mudar — não precisa checar de novo."],
+            ["💳","Sem cartão de crédito"],
+            ["⏱️","Resultado em minutos"],
+            ["🛡️","100% online e seguro"],
+          ].map(([icon,label],i)=>(
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:T.muted }}>
+              <span>{icon}</span>{label}
+            </div>
+          ))}
+        </div>
+
+        {/* Cena viva — Guardian observando o Brasil */}
+        <div id="demonstracao" style={{ textAlign:"center", marginBottom:16 }}>
+          <div style={{ fontSize:11, fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", color:T.muted }}>O Guardian nunca dorme</div>
+        </div>
+        <HeroMap/>
+
+        <div style={{ display:"grid", gap:8, margin:"20px 0 12px" }}>
+          <LiveCheckCard nome="Receita Federal" status="ok" detalhe="Regular"/>
+          <LiveCheckCard nome="FGTS" status="ok" detalhe="Sem pendências"/>
+          <LiveCheckCard nome="PGFN" status="alerta" detalhe="Débito identificado — ação recomendada"/>
+          <LiveCheckCard nome="Simples Nacional" status="ok" detalhe="Ativo"/>
+        </div>
+        <div style={{ textAlign:"center", fontSize:12, color:T.muted, lineHeight:1.6, margin:"8px 0 40px" }}>
+          Exemplo ilustrativo — o seu check-up mostra a situação real da sua empresa.
+        </div>
+
+        {/* 4 benefícios */}
+        <div id="recursos" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:40 }}>
+          {[
+            ["🛡️","Monitore 24/7","Acompanhamento contínuo das principais fontes oficiais."],
+            ["🔔","Alertas Inteligentes","Se algo mudar, você é avisado na hora."],
+            ["📋","Ações Recomendadas","Não é só informação — você recebe o que fazer."],
+            ["📊","Decisões Seguras","Clareza pra planejar e crescer com segurança."],
           ].map(([icon,title,desc],i)=>(
-            <Card key={i} style={{ display:"flex", gap:14, alignItems:"flex-start", padding:16 }}>
-              <span style={{ fontSize:22 }}>{icon}</span>
-              <div>
-                <div style={{ fontWeight:700, fontSize:14, marginBottom:3 }}>{title}</div>
-                <div style={{ fontSize:13, color:T.sub, lineHeight:1.5 }}>{desc}</div>
-              </div>
+            <Card key={i} style={{ padding:14 }}>
+              <div style={{ width:34, height:34, borderRadius:10, background:T.success+"14", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, marginBottom:10 }}>{icon}</div>
+              <div style={{ fontWeight:700, fontSize:13, marginBottom:4 }}>{title}</div>
+              <div style={{ fontSize:12, color:T.sub, lineHeight:1.5 }}>{desc}</div>
             </Card>
           ))}
         </div>
 
-        <button onClick={onStart} style={{ width:"100%", padding:"16px", borderRadius:14, border:"none", background:"linear-gradient(135deg,#14B8A6,#0EA5E9)", color:"#031018", fontWeight:800, fontSize:16, cursor:"pointer" }}>
+        <button onClick={onStart} style={{ width:"100%", padding:"16px", borderRadius:14, border:`1px solid ${T.success}`, background:"transparent", color:T.success, fontWeight:700, fontSize:15, cursor:"pointer" }}>
           Fazer check-up gratuito →
         </button>
-        <div style={{ textAlign:"center", fontSize:12, color:T.muted, marginTop:12 }}>Grátis · sem cartão · leva 15 segundos</div>
       </div>
     </div>
   );
 }
+
 
 function ScreenInput({ onSubmit, error, onBack }) {
   const [cnpj, setCnpj] = useState("69.210.953/0001-80");
@@ -293,38 +447,40 @@ function ScreenLoading({ logs }) {
   );
 }
 
-const sevColor = { CRITICA:T.danger, ALTA:T.warning, MEDIA:T.accent, BAIXA:T.muted };
-
-// ── CTA de checkout real — Stripe Payment Link, hospedado, sem formulário próprio
+// ── CTA de checkout — inicia via backend (POST /v1/checkout) ───────────────
 function CheckoutCTA({ audit }) {
   const [email, setEmail] = useState("");
-  const abrirCheckout = async () => {
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState(null); // null | "sem_checkout" | "erro"
+
+  const assinar = async () => {
     if (!/\S+@\S+\.\S+/.test(email)) return;
-    await capturarLead({
-      email, intent: "checkout_iniciado", cnpj: audit.cnpj, companyName: audit.company.razaoSocial,
-      sourceMode: audit.mode, selectedPlan: "individual",
-      resultSnapshot: { trustScore: audit.verdict.trustScore, riskLevel: audit.verdict.riskLevel },
+    setLoading(true);
+    const res = await iniciarCheckout({
+      email, cnpj: audit.cnpj, companyName: audit.company.razaoSocial, sourceMode: audit.mode,
+      selectedPlan: "fundador", resultSnapshot: { score: audit.state.score, label: audit.state.label },
     });
-    if (STRIPE_PAYMENT_LINK) {
-      const url = new URL(STRIPE_PAYMENT_LINK);
-      url.searchParams.set("prefilled_email", email);
-      url.searchParams.set("client_reference_id", audit.cnpj);
-      window.open(url.toString(), "_blank");
+    setLoading(false);
+    if (res.ok && res.checkoutUrl) {
+      window.open(res.checkoutUrl, "_blank");
+    } else {
+      setStatus("sem_checkout");
     }
   };
+
   return (
     <Card style={{ background:`linear-gradient(135deg, ${T.surface}, ${T.surface2})`, border:`1px solid ${T.accent}40` }}>
-      <div style={{ fontWeight:800, fontSize:15, marginBottom:6 }}>Isso pode mudar amanhã.</div>
+      <div style={{ fontWeight:800, fontSize:15, marginBottom:6 }}>{audit.upsell?.message || "Posso avisar quando algo mudar"}</div>
       <div style={{ fontSize:13, color:T.sub, lineHeight:1.6, marginBottom:14 }}>
-        Essa é a foto de hoje, grátis. Assine o monitoramento contínuo e a gente avisa assim que surgir algo novo — sem precisar checar de novo.
+        Essa é a foto de hoje, grátis. Assine o monitoramento contínuo e a gente avisa assim que surgir algo novo.
       </div>
       <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"
         style={{ width:"100%", boxSizing:"border-box", padding:"11px 14px", borderRadius:10, background:T.surface2, border:`1px solid ${T.border}`, color:T.text, fontSize:13, marginBottom:10, outline:"none" }}/>
-      <button onClick={abrirCheckout} style={{ width:"100%", padding:"12px", borderRadius:12, border:"none", background:`linear-gradient(135deg, ${T.accent}, ${T.purple})`, color:"#031018", fontWeight:700, fontSize:14, cursor:"pointer" }}>
-        Assinar monitoramento — US$ 15/mês →
+      <button onClick={assinar} disabled={loading} style={{ width:"100%", padding:"12px", borderRadius:12, border:"none", background:`linear-gradient(135deg, ${T.accent}, ${T.purple})`, color:"#031018", fontWeight:700, fontSize:14, cursor:"pointer", opacity:loading?.7:1 }}>
+        {loading ? "Preparando checkout…" : `Ativar proteção contínua — ${audit.upsell?.price || "R$ 19,90/mês"} →`}
       </button>
-      {!STRIPE_PAYMENT_LINK && (
-        <div style={{ marginTop:10, fontSize:11, color:T.warning }}>⚠ Checkout ainda não configurado (STRIPE_PAYMENT_LINK vazio) — o lead já está sendo salvo.</div>
+      {status==="sem_checkout" && (
+        <div style={{ marginTop:10, fontSize:11, color:T.warning }}>⚠ Seu e-mail já foi salvo. O checkout ainda está sendo configurado — te avisamos assim que abrir.</div>
       )}
     </Card>
   );
@@ -332,14 +488,11 @@ function CheckoutCTA({ audit }) {
 
 function ScreenResult({ audit, onReset }) {
   const [tab, setTab] = useState("home");
-
-  const { trustScore, confidence, label } = audit.verdict;
-  const scoreColor = trustScore>=80?T.success:trustScore>=60?T.warning:T.danger;
+  const { label, score, confidence } = audit.state;
+  const color = stateColor[label] || T.muted;
   const sitColor = audit.company.situacao==="ATIVA"?T.success:T.danger;
-  const criticas = audit.findings.filter(f=>f.severity==="CRITICA");
-  const altas = audit.findings.filter(f=>f.severity==="ALTA");
-  const [ringAnim, setRingAnim] = useState(false);
-  useEffect(()=>{ setTimeout(()=>setRingAnim(true),300); },[]);
+  const criticos = audit.findings.filter(f=>f.urgency==="critical");
+  const altos = audit.findings.filter(f=>f.urgency==="high");
 
   const tabs = [
     { id:"home", label:"Situação" },
@@ -350,18 +503,14 @@ function ScreenResult({ audit, onReset }) {
 
   return (
     <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',-apple-system,sans-serif", color:T.text }}>
-      <style>{`@keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}} @keyframes ping{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(2);opacity:0}}`}</style>
+      <style>{`@keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}`}</style>
 
       <div style={{ position:"sticky", top:0, zIndex:50, background:T.bg+"f0", backdropFilter:"blur(16px)", borderBottom:`1px solid ${T.border}` }}>
         <div style={{ maxWidth:680, margin:"0 auto", padding:"0 16px" }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, height:54 }}>
             <Logo size={28}/><Wordmark small/>
-            {audit.mode==="DEMO" && <span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:T.warning+"18", color:T.warning, border:`1px solid ${T.warning}30` }}>MODO DEMO</span>}
+            {audit.mode==="DEMO" && <span style={{ fontSize:10, fontWeight:800, padding:"3px 9px", borderRadius:99, background:T.warning+"18", color:T.warning, border:`1px solid ${T.warning}30` }}>SIMULAÇÃO</span>}
             <div style={{ flex:1 }}/>
-            <div style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 12px", borderRadius:99, background:scoreColor+"18", border:`1px solid ${scoreColor}30` }}>
-              <Dot color={scoreColor} pulse={trustScore<80}/>
-              <span style={{ fontWeight:800, fontSize:13, color:scoreColor }}>{trustScore}</span><span style={{ fontSize:11, color:T.muted }}>/100</span>
-            </div>
             <button onClick={onReset} style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontSize:12, fontWeight:600, cursor:"pointer" }}>Nova consulta</button>
           </div>
           <div style={{ display:"flex", overflowX:"auto" }}>
@@ -376,32 +525,34 @@ function ScreenResult({ audit, onReset }) {
 
         {tab==="home" && (
           <div style={{ display:"grid", gap:16, animation:"up .5s ease both" }}>
-            <Card style={{ background:`linear-gradient(135deg,${T.surface} 55%,${T.accent}08)`, borderColor:T.borderLight }}>
-              <div style={{ fontWeight:800, fontSize:18, marginBottom:16 }}>{audit.company.razaoSocial}</div>
-              <div style={{ display:"flex", gap:22, alignItems:"center", flexWrap:"wrap" }}>
-                <TrustRing score={trustScore} confidence={confidence} label={label} animated={ringAnim}/>
-                <div style={{ flex:1, minWidth:180 }}>
-                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
-                    <Chip label={audit.company.situacao} color={sitColor}/>
-                    {audit.company.regime && <Chip label={audit.company.regime==="SIMPLES_NACIONAL"?"Simples Nacional":audit.company.regime} color={T.accent}/>}
-                    {audit.company.porte && <Chip label={audit.company.porte} color={T.muted}/>}
-                  </div>
-                  <div style={{ fontSize:14, color:T.sub, lineHeight:1.7, marginBottom:12 }}>
-                    {criticas.length>0||altas.length>0
-                      ? <>Encontrei <strong style={{ color:T.danger }}>{criticas.length} achado(s) crítico(s)</strong> e <strong style={{ color:T.warning }}>{altas.length} de alta prioridade</strong>.</>
-                      : "Nenhum achado crítico nas fontes verificadas."}
-                  </div>
-                  <div style={{ fontSize:12, color:T.muted }}>Confiança: <span style={{ color:T.sub }}>{confidence}%</span></div>
-                </div>
+            {/* Estado do negócio é a manchete — score vira badge secundário */}
+            <Card style={{ background:`linear-gradient(135deg,${T.surface} 55%,${color}0c)`, borderColor:color+"40" }}>
+              <div style={{ fontSize:12, color:T.muted, marginBottom:4 }}>{audit.company.razaoSocial}</div>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+                <span style={{ fontSize:28 }}>{stateIcon[label]}</span>
+                <span style={{ fontWeight:900, fontSize:26, color, letterSpacing:"-.02em" }}>{label}</span>
+                <span style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:4, padding:"4px 10px", borderRadius:99, background:T.surface2, border:`1px solid ${T.border}`, fontSize:11, color:T.muted }}>
+                  score <strong style={{ color:T.sub }}>{score}</strong>/100
+                </span>
+              </div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
+                <Chip label={audit.company.situacao} color={sitColor}/>
+                {audit.company.regime && <Chip label={audit.company.regime==="SIMPLES_NACIONAL"?"Simples Nacional":audit.company.regime} color={T.accent}/>}
+                {audit.company.porte && <Chip label={audit.company.porte} color={T.muted}/>}
+              </div>
+              <div style={{ fontSize:14, color:T.sub, lineHeight:1.7 }}>
+                {criticos.length>0||altos.length>0
+                  ? <>Encontrei <strong style={{ color:T.danger }}>{criticos.length} achado(s) crítico(s)</strong> e <strong style={{ color:T.warning }}>{altos.length} de alta prioridade</strong>.</>
+                  : "Nenhum achado crítico nas fontes verificadas."}
+                {" "}Confiança da análise: {confidence}%.
               </div>
             </Card>
 
             {audit.findings.slice(0,3).map((f,i)=>(
-              <Card key={i} style={{ padding:"14px 16px", borderLeft:`3px solid ${sevColor[f.severity]||T.muted}` }}>
+              <Card key={i} style={{ padding:"14px 16px", borderLeft:`3px solid ${urgColor[f.urgency]||T.muted}` }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
-                  <span style={{ fontSize:18 }}>{f.icon}</span>
                   <span style={{ fontWeight:700, fontSize:14 }}>{f.source}</span>
-                  <Chip label={f.severity} color={sevColor[f.severity]||T.muted}/>
+                  <Chip label={urgLabel[f.urgency]||f.urgency} color={urgColor[f.urgency]||T.muted}/>
                 </div>
                 <div style={{ fontSize:13, color:T.sub, lineHeight:1.6 }}>{f.detail}</div>
               </Card>
@@ -409,13 +560,15 @@ function ScreenResult({ audit, onReset }) {
             {audit.findings.length>3 && (
               <button onClick={()=>setTab("achados")} style={{ padding:"11px", borderRadius:10, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontSize:13, fontWeight:600, cursor:"pointer" }}>Ver todos os {audit.findings.length} achados →</button>
             )}
+
+            <CheckoutCTA audit={audit}/>
           </div>
         )}
 
         {tab==="achados" && (
           <div style={{ animation:"up .5s ease both" }}>
             <div style={{ fontSize:20, fontWeight:800, marginBottom:4 }}>Achados e Próximas Ações</div>
-            <div style={{ fontSize:13, color:T.sub, marginBottom:20 }}>{audit.findings.length} achado(s) · {criticas.length} crítico(s) · {altas.length} alta prioridade</div>
+            <div style={{ fontSize:13, color:T.sub, marginBottom:20 }}>{audit.findings.length} achado(s) · {criticos.length} crítico(s) · {altos.length} alta prioridade</div>
 
             {audit.findings.length===0 ? (
               <Card style={{ textAlign:"center", padding:40, marginBottom:16 }}>
@@ -425,21 +578,20 @@ function ScreenResult({ audit, onReset }) {
             ) : (
               <div style={{ display:"grid", gap:10, marginBottom:16 }}>
                 {audit.findings.map((f,i)=>{
-                  const action = audit.nextActions.find(a=>a.id===`resolver_${f.id}`);
+                  const action = audit.actions.find(a=>a.title.includes(f.source));
                   return (
-                    <Card key={i} style={{ padding:"16px 18px", borderLeft:`3px solid ${sevColor[f.severity]||T.muted}` }}>
+                    <Card key={i} style={{ padding:"16px 18px", borderLeft:`3px solid ${urgColor[f.urgency]||T.muted}` }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
                         <div style={{ flex:1 }}>
                           <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:8 }}>
-                            <span style={{ fontSize:20 }}>{f.icon}</span>
                             <span style={{ fontWeight:700, fontSize:15 }}>{f.source}</span>
-                            <Chip label={f.severity} color={sevColor[f.severity]||T.muted}/>
-                            {f.evidenceSource==="PREVIEW_DEMO" && <Chip label="Simulado (demo)" color={T.warning}/>}
+                            <Chip label={urgLabel[f.urgency]||f.urgency} color={urgColor[f.urgency]||T.muted}/>
+                            {f.preview && <Chip label="Simulação" color={T.warning}/>}
                           </div>
                           <div style={{ fontSize:13, color:T.sub, lineHeight:1.7 }}>{f.detail}</div>
-                          {f.dueDate && <div style={{ fontSize:12, color:T.danger, fontWeight:700, marginTop:8 }}>📅 Vencimento: {f.dueDate}</div>}
+                          {action && <div style={{ fontSize:11, color:T.muted, marginTop:8 }}>Impacto: {action.impact} · Tempo estimado: {action.time}</div>}
                         </div>
-                        {action?.url && <a href={action.url} target="_blank" rel="noreferrer" style={{ padding:"7px 12px", borderRadius:8, border:`1px solid ${sevColor[f.severity]}44`, background:(sevColor[f.severity]||T.muted)+"12", color:sevColor[f.severity], fontSize:11, fontWeight:700, textDecoration:"none", whiteSpace:"nowrap" }}>Resolver ↗</a>}
+                        {action?.url && <a href={action.url} target="_blank" rel="noreferrer" style={{ padding:"7px 12px", borderRadius:8, border:`1px solid ${urgColor[f.urgency]}44`, background:(urgColor[f.urgency]||T.muted)+"12", color:urgColor[f.urgency], fontSize:11, fontWeight:700, textDecoration:"none", whiteSpace:"nowrap" }}>{action.cta} ↗</a>}
                       </div>
                     </Card>
                   );
@@ -456,15 +608,18 @@ function ScreenResult({ audit, onReset }) {
             <div style={{ fontSize:20, fontWeight:800, marginBottom:4 }}>Cobertura de Fontes</div>
             <div style={{ fontSize:13, color:T.sub, marginBottom:16 }}>Confiança atual: {confidence}%</div>
             <div style={{ display:"grid", gap:8 }}>
-              {audit.sourcesCoverage.map((f,i)=>{
-                const statusColor = f.status==="OK" ? (f.ok?T.success:T.danger) : f.status==="SIMULATED" ? T.warning : T.muted;
-                const statusLabel = { OK: f.ok?"Regular":"Irregular", NOT_CONNECTED:"Não conectada", UNAVAILABLE:"Indisponível", SIMULATED:"Simulado (demo)" }[f.status] || f.status;
+              {audit.sources.map((f,i)=>{
+                const statusColor = { ok:T.success, critical:T.danger, pending:T.muted }[f.status] || T.muted;
+                const statusLabel = { ok:"Regular", critical:"Pendência encontrada", pending:"Não conectada" }[f.status] || f.status;
                 return (
                   <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 16px", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12 }}>
-                    <span style={{ fontWeight:700, fontSize:13, flex:1 }}>{f.name}</span>
-                    <Chip label={f.tier==="AUTOMATIC"?"Automática":"Guiada"} color={f.tier==="AUTOMATIC"?T.success:T.warning}/>
+                    <div style={{ flex:1 }}>
+                      <span style={{ fontWeight:700, fontSize:13 }}>{f.name}</span>
+                      <div style={{ fontSize:12, color:T.sub, marginTop:2 }}>{f.detail}</div>
+                    </div>
+                    <Chip label={f.type==="automatic"?"Automática":"Guiada"} color={f.type==="automatic"?T.success:T.warning}/>
                     <Chip label={statusLabel} color={statusColor}/>
-                    {f.guidedUrl && f.status==="NOT_CONNECTED" && <a href={f.guidedUrl} target="_blank" rel="noreferrer" style={{ padding:"6px 12px", borderRadius:8, border:`1px solid ${T.accent}44`, background:T.accent+"15", color:T.accent, fontSize:11, fontWeight:700, textDecoration:"none" }}>Verificar →</a>}
+                    {f.guidedUrl && f.status!=="ok" && <a href={f.guidedUrl} target="_blank" rel="noreferrer" style={{ padding:"6px 12px", borderRadius:8, border:`1px solid ${T.accent}44`, background:T.accent+"15", color:T.accent, fontSize:11, fontWeight:700, textDecoration:"none" }}>Verificar →</a>}
                   </div>
                 );
               })}
@@ -479,12 +634,12 @@ function ScreenResult({ audit, onReset }) {
             <Card style={{ marginBottom:14 }}>
               {[
                 ["Razão Social", audit.company.razaoSocial], ["Nome Fantasia", audit.company.nomeFantasia],
-                ["CNPJ", audit.cnpjFormatted], ["Situação", audit.company.situacao],
+                ["CNPJ", audit.company.cnpj], ["Situação", audit.company.situacao],
                 ["Data de Abertura", audit.company.dataAbertura], ["Natureza Jurídica", audit.company.naturezaJuridica],
                 ["Porte", audit.company.porte],
                 ["Regime", audit.company.regime==="SIMPLES_NACIONAL"?"Simples Nacional":audit.company.regime],
                 ["Capital Social", audit.company.capitalSocial?`R$ ${Number(audit.company.capitalSocial).toLocaleString("pt-BR",{minimumFractionDigits:2})}`:null],
-                ["CNAE", audit.company.cnae?.codigo?`${audit.company.cnae.codigo} — ${audit.company.cnae.descricao}`:null],
+                ["CNAE", audit.company.cnae?.cod?`${audit.company.cnae.cod} — ${audit.company.cnae.desc}`:null],
                 ["Município/UF", audit.company.municipio?`${audit.company.municipio} / ${audit.company.uf}`:null],
               ].filter(([,v])=>v).map(([l,v],i,arr)=>(
                 <div key={l} style={{ display:"flex", justifyContent:"space-between", gap:12, padding:"9px 0", borderBottom:i<arr.length-1?`1px solid ${T.border}`:"none" }}>
@@ -535,7 +690,7 @@ export default function App() {
       contrato = toDemoContract(cnpj, digits);
     }
 
-    addLog("📊", `Health Score: ${contrato.verdict.trustScore}/100`);
+    addLog("📊", `${contrato.state.label} — score ${contrato.state.score}/100`);
     await sleep(400);
     addLog(contrato.findings.length>0?"🚨":"✅", contrato.findings.length>0?`${contrato.findings.length} achado(s) identificado(s)`:"Nenhum achado crítico");
     await sleep(400);
