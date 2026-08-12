@@ -363,6 +363,7 @@ function ScreenLanding({ onStart }) {
             ))}
           </div>
           <div style={{ flex:1 }}/>
+          <a href="/login" className="hh-nav-links" style={{ fontSize:13, color:T.sub, textDecoration:"none", fontWeight:600, marginRight:8 }}>Entrar</a>
           <button onClick={onStart} style={{ marginLeft:"auto", padding:"9px 16px", borderRadius:10, border:`1px solid ${T.success}`, background:"transparent", color:T.success, fontWeight:700, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>
             Fazer check-up →
           </button>
@@ -731,7 +732,7 @@ function ScreenResult({ audit, onReset }) {
   );
 }
 
-export default function App() {
+function CheckupApp() {
   const [screen, setScreen] = useState("landing");
   const [logs, setLogs] = useState([]);
   const [error, setError] = useState(null);
@@ -770,4 +771,286 @@ export default function App() {
   if (screen==="loading") return <ScreenLoading logs={logs}/>;
   if (screen==="result" && audit) return <ScreenResult audit={audit} onReset={handleReset}/>;
   return <ScreenInput onSubmit={handleSubmit} error={error} onBack={()=>setScreen("landing")}/>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTENTICAÇÃO — sessão em localStorage, sem biblioteca de roteamento externa
+// (router mínimo baseado em window.location, pra não engordar o bundle).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function getSession() {
+  try {
+    const raw = localStorage.getItem("hh_session");
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function setSession(data) { localStorage.setItem("hh_session", JSON.stringify(data)); }
+function clearSession() { localStorage.removeItem("hh_session"); }
+
+async function apiAuth(path, opts = {}) {
+  const session = getSession();
+  const headers = { "Content-Type": "application/json", ...(opts.headers||{}) };
+  if (session?.sessionToken) headers.Authorization = `Bearer ${session.sessionToken}`;
+  const r = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+  if (r.status === 401) { clearSession(); throw new Error("Sessão expirada"); }
+  if (!r.ok) throw new Error(`Erro ${r.status}`);
+  return r.json();
+}
+
+function ScreenLogin() {
+  const [email, setEmail] = useState("");
+  const [enviado, setEnviado] = useState(false);
+  const [verificando, setVerificando] = useState(false);
+  const [erro, setErro] = useState(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (!token) return;
+    setVerificando(true);
+    fetch(`${API_BASE}/v1/auth/verify?token=${encodeURIComponent(token)}`)
+      .then(r => { if (!r.ok) throw new Error("Link inválido ou expirado"); return r.json(); })
+      .then(data => {
+        setSession(data);
+        window.location.href = data.role === "admin" ? "/admin" : "/app";
+      })
+      .catch(e => { setErro(e.message); setVerificando(false); });
+  }, []);
+
+  const enviar = async () => {
+    if (!/\S+@\S+\.\S+/.test(email)) return;
+    try {
+      await fetch(`${API_BASE}/v1/auth/magic-link`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }),
+      });
+      setEnviado(true);
+    } catch { setErro("Não foi possível enviar. Tente novamente."); }
+  };
+
+  if (verificando) {
+    return (
+      <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',-apple-system,sans-serif" }}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>🔐</div>
+          <div style={{ fontSize:14, color:T.sub }}>{erro || "Verificando seu link…"}</div>
+          {erro && <a href="/login" style={{ color:T.success, fontSize:13, display:"block", marginTop:12 }}>← Tentar de novo</a>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", padding:24, fontFamily:"'Inter',-apple-system,sans-serif" }}>
+      <div style={{ maxWidth:380, width:"100%" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:32, justifyContent:"center" }}>
+          <Logo/><Wordmark/>
+        </div>
+        {!enviado ? (
+          <Card>
+            <div style={{ fontWeight:800, fontSize:17, marginBottom:6 }}>Entrar</div>
+            <div style={{ fontSize:13, color:T.sub, marginBottom:16 }}>Sem senha — a gente manda um link seguro pro seu e-mail.</div>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"
+              style={{ width:"100%", boxSizing:"border-box", padding:"12px 14px", borderRadius:10, background:T.surface2, border:`1px solid ${T.border}`, color:T.text, fontSize:14, marginBottom:12, outline:"none" }}/>
+            <button onClick={enviar} style={{ width:"100%", padding:"12px", borderRadius:10, border:"none", background:T.success, color:"#031018", fontWeight:700, fontSize:14, cursor:"pointer" }}>
+              Enviar link de acesso →
+            </button>
+            {erro && <div style={{ color:T.danger, fontSize:12, marginTop:10 }}>{erro}</div>}
+          </Card>
+        ) : (
+          <Card style={{ textAlign:"center" }}>
+            <div style={{ fontSize:32, marginBottom:10 }}>📩</div>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:6 }}>Verifique seu e-mail</div>
+            <div style={{ fontSize:13, color:T.sub, lineHeight:1.6 }}>Enviamos um link de acesso pra <strong>{email}</strong>. Ele expira em 20 minutos.</div>
+          </Card>
+        )}
+        <a href="/" style={{ display:"block", textAlign:"center", fontSize:12, color:T.muted, marginTop:20 }}>← Voltar pro início</a>
+      </div>
+    </div>
+  );
+}
+
+// ── Portal do Cliente ────────────────────────────────────────────────────
+
+function ScreenCustomerPortal() {
+  const [dados, setDados] = useState(null);
+  const [erro, setErro] = useState(null);
+  const [recheckLoading, setRecheckLoading] = useState(null);
+  const session = getSession();
+
+  const carregar = () => {
+    apiAuth("/v1/customer/dashboard").then(setDados).catch(e => setErro(e.message));
+  };
+  useEffect(() => { if (session) carregar(); }, []);
+
+  if (!session) {
+    return (
+      <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',-apple-system,sans-serif" }}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ marginBottom:12 }}>Você precisa entrar para ver sua conta.</div>
+          <a href="/login" style={{ color:T.success, fontWeight:700 }}>Entrar →</a>
+        </div>
+      </div>
+    );
+  }
+
+  const sair = () => { clearSession(); window.location.href = "/"; };
+
+  const recheck = async cnpj => {
+    setRecheckLoading(cnpj);
+    try { await apiAuth(`/v1/customer/recheck/${cnpj}`, { method:"POST" }); carregar(); }
+    catch (e) { setErro(e.message); }
+    setRecheckLoading(null);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'Inter',-apple-system,sans-serif" }}>
+      <div style={{ borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 20px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}><Logo/><Wordmark/></div>
+        <button onClick={sair} style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontSize:12, cursor:"pointer" }}>Sair</button>
+      </div>
+
+      <div style={{ maxWidth:600, margin:"0 auto", padding:"32px 20px 60px" }}>
+        <div style={{ fontSize:20, fontWeight:800, marginBottom:4 }}>Minha conta</div>
+        <div style={{ fontSize:13, color:T.sub, marginBottom:24 }}>{session.email}</div>
+
+        {erro && <div style={{ color:T.danger, fontSize:13, marginBottom:16 }}>{erro}</div>}
+        {!dados ? <div style={{ color:T.sub, fontSize:13 }}>Carregando…</div> : (
+          <>
+            <Card style={{ marginBottom:16 }}>
+              <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", marginBottom:8 }}>Minha assinatura</div>
+              {dados.subscription?.ativo ? (
+                <>
+                  <Chip label="Ativa" color={T.success}/>
+                  <div style={{ fontSize:13, color:T.sub, marginTop:8 }}>Plano Fundador — R$ 19,90/mês</div>
+                  <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>Desde {new Date(dados.subscription.ativadoEm).toLocaleDateString("pt-BR")}</div>
+                </>
+              ) : (
+                <>
+                  <Chip label="Sem assinatura ativa" color={T.muted}/>
+                  <div style={{ fontSize:13, color:T.sub, marginTop:10 }}>Faça um check-up e ative o monitoramento contínuo.</div>
+                  <a href="/" style={{ display:"inline-block", marginTop:10, color:T.success, fontWeight:700, fontSize:13 }}>Fazer check-up →</a>
+                </>
+              )}
+            </Card>
+
+            <div style={{ fontSize:14, fontWeight:700, marginBottom:10 }}>Empresas monitoradas {dados.alertCount>0 && <span style={{ color:T.warning, fontWeight:400, fontSize:12 }}>· {dados.alertCount} alerta(s)</span>}</div>
+            {dados.monitorings.length===0 ? (
+              <Card style={{ textAlign:"center", padding:30, marginBottom:16 }}>
+                <div style={{ fontSize:13, color:T.sub }}>Nenhuma empresa monitorada ainda.</div>
+              </Card>
+            ) : dados.monitorings.map((m,i)=>(
+              <Card key={i} style={{ marginBottom:10 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:14 }}>{m.companyName || m.cnpj}</div>
+                    <div style={{ fontSize:11, color:T.muted }}>{fmtCNPJ(m.cnpj)}</div>
+                  </div>
+                  <Chip label={m.active ? "Monitorando" : "Pausado"} color={m.active ? T.success : T.muted}/>
+                </div>
+                {m.state && <div style={{ fontSize:12, color:T.sub, marginTop:6 }}>{m.state} · score {m.score}/100</div>}
+                <div style={{ fontSize:11, color:T.muted, marginTop:6 }}>
+                  {m.lastCheckAt ? `Última verificação: ${new Date(m.lastCheckAt).toLocaleString("pt-BR")}` : "Ainda sem verificação"}
+                </div>
+                <button onClick={()=>recheck(m.cnpj)} disabled={recheckLoading===m.cnpj}
+                  style={{ marginTop:10, padding:"8px 14px", borderRadius:8, border:`1px solid ${T.success}44`, background:T.success+"12", color:T.success, fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                  {recheckLoading===m.cnpj ? "Verificando…" : "Fazer nova verificação"}
+                </button>
+              </Card>
+            ))}
+
+            {dados.lastAudit && (
+              <Card style={{ marginTop:16 }}>
+                <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", marginBottom:8 }}>Último check-up</div>
+                <div style={{ fontSize:13, color:T.sub }}>{dados.lastAudit.state?.label} — score {dados.lastAudit.state?.score}/100</div>
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Portal Admin ─────────────────────────────────────────────────────────
+
+function ScreenAdminPortal() {
+  const [dados, setDados] = useState(null);
+  const [erro, setErro] = useState(null);
+  const session = getSession();
+
+  useEffect(() => {
+    if (!session) return;
+    apiAuth("/v1/admin/dashboard").then(setDados).catch(e => setErro(e.message));
+  }, []);
+
+  if (!session) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#050709", color:"#ccc", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace" }}>
+        <div><div>Acesso restrito.</div><a href="/login" style={{ color:T.success }}>Entrar →</a></div>
+      </div>
+    );
+  }
+  if (erro === "Erro 403") {
+    return (
+      <div style={{ minHeight:"100vh", background:"#050709", color:"#ccc", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace" }}>
+        <div>Acesso negado — este e-mail não tem permissão de admin.</div>
+      </div>
+    );
+  }
+
+  const sair = () => { clearSession(); window.location.href = "/"; };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#050709", color:"#D6DCE5", fontFamily:"'SF Mono', Menlo, monospace", fontSize:13 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 20px", borderBottom:"1px solid #1A2235" }}>
+        <div style={{ fontWeight:800 }}>Hub Health — Admin</div>
+        <button onClick={sair} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid #333", background:"transparent", color:"#999", cursor:"pointer", fontSize:11 }}>Sair</button>
+      </div>
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"24px 20px" }}>
+        {erro && <div style={{ color:T.danger, marginBottom:16 }}>{erro}</div>}
+        {!dados ? <div style={{ color:"#888" }}>Carregando…</div> : (
+          <>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10, marginBottom:24 }}>
+              {[["Leads", dados.totalLeads],["Assinaturas", dados.totalSubscriptions],["Monitoramentos ativos", dados.activeMonitorings],["Alertas", dados.totalAlerts]].map(([l,v],i)=>(
+                <div key={i} style={{ background:"#0D1117", border:"1px solid #1A2235", borderRadius:10, padding:14 }}>
+                  <div style={{ color:"#666", fontSize:10, textTransform:"uppercase" }}>{l}</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:T.success }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontWeight:700, marginBottom:10 }}>Leads recentes</div>
+            <div style={{ border:"1px solid #1A2235", borderRadius:10, overflow:"hidden" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                <thead><tr style={{ background:"#0D1117" }}>
+                  {["E-mail","CNPJ","Intenção","Modo","Quando"].map(h=>(
+                    <th key={h} style={{ textAlign:"left", padding:"8px 10px", color:"#666", fontWeight:600, fontSize:10, textTransform:"uppercase" }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {dados.recentLeads.slice().reverse().map((l,i)=>(
+                    <tr key={i} style={{ borderTop:"1px solid #1A2235" }}>
+                      <td style={{ padding:"8px 10px" }}>{l.email}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.cnpj || "—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.intent || l.evento || "—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.sourceMode || "—"}</td>
+                      <td style={{ padding:"8px 10px", color:"#666" }}>{l.recordedAt ? new Date(l.recordedAt).toLocaleString("pt-BR") : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Router raiz — sem biblioteca externa, baseado em window.location ───────
+export default function App() {
+  const path = typeof window !== "undefined" ? window.location.pathname : "/";
+  if (path.startsWith("/login")) return <ScreenLogin/>;
+  if (path.startsWith("/app")) return <ScreenCustomerPortal/>;
+  if (path.startsWith("/admin")) return <ScreenAdminPortal/>;
+  return <CheckupApp/>;
 }
