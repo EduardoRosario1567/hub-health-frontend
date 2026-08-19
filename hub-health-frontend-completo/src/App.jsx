@@ -210,10 +210,16 @@ function useReducedMotion() {
 }
 
 function HeroRadar() {
-  const CX = 150, CY = 150, R = 108;
+  const CX = 150, CY = 150, R = 122;
   const svgRef = useRef(null);
   const [pointer, setPointer] = useState(null); // {x,y} em coordenadas do viewBox, ou null
   const reduced = useReducedMotion();
+
+  // Cor = evidência, nunca decoração (PATCH 12). Antes de uma auditoria
+  // real, as fontes só podem estar "disponíveis" — nunca "regulares".
+  // Verde (T.success) é reservado pra depois que existir evidência de
+  // verdade; aqui usamos teal (T.accent), que significa "monitorável".
+  const CorDisponivel = T.accent;
 
   const nodes = RADAR_FONTES.map((f, i) => {
     const angle = (Math.PI * 2 * i) / RADAR_FONTES.length - Math.PI / 2;
@@ -245,14 +251,15 @@ function HeroRadar() {
   };
 
   return (
-    <div style={{ position:"relative", width:"100%", maxWidth:360, margin:"0 auto", aspectRatio:"1/1" }} aria-hidden="true">
+    <div style={{ position:"relative", width:"100%", maxWidth:440, margin:"0 auto", aspectRatio:"1/1" }} aria-hidden="true">
       <style>{`
         @keyframes hrPulseDot { 0%,100%{ transform:scale(1); opacity:.85 } 50%{ transform:scale(1.7); opacity:.25 } }
         @keyframes hrGlowCenter { 0%,100%{ opacity:.45; transform:scale(1) } 50%{ opacity:.85; transform:scale(1.18) } }
         @keyframes hrSpokeFade { 0%,100%{ opacity:.12 } 50%{ opacity:.4 } }
         @keyframes hrSweep { 0%{ transform:scale(.25); opacity:.5 } 100%{ transform:scale(1); opacity:0 } }
+        @keyframes hrDataPulse { 0%{ opacity:0 } 15%{ opacity:1 } 85%{ opacity:1 } 100%{ opacity:0 } }
         @media (prefers-reduced-motion: reduce) {
-          .hr-dot-pulse, .hr-glow, .hr-spoke, .hr-sweep { animation: none !important; opacity: .35 !important; }
+          .hr-dot-pulse, .hr-glow, .hr-spoke, .hr-sweep, .hr-data-pulse { animation: none !important; opacity: .35 !important; }
         }
       `}</style>
       <svg ref={svgRef} viewBox="0 0 300 300" width="100%" height="100%" style={{ overflow:"visible", touchAction:"none" }}
@@ -266,60 +273,70 @@ function HeroRadar() {
             <feGaussianBlur stdDeviation="3.4"/>
           </filter>
           <filter id="hrBlurBig" x="-120%" y="-120%" width="340%" height="340%">
-            <feGaussianBlur stdDeviation="8"/>
+            <feGaussianBlur stdDeviation="9"/>
           </filter>
         </defs>
 
         {/* anéis do radar */}
         {[R*0.4, R*0.7, R].map((r,i)=>(
-          <circle key={i} cx={CX} cy={CY} r={r} fill="none" stroke={T.success} strokeWidth="1" opacity=".12"/>
+          <circle key={i} cx={CX} cy={CY} r={r} fill="none" stroke={CorDisponivel} strokeWidth="1" opacity=".14"/>
         ))}
 
         {/* varredura contínua — anéis de ping expandindo do centro */}
         {!reduced && [0,1.4,2.8].map(delay=>(
-          <circle key={delay} className="hr-sweep" cx={CX} cy={CY} r={R} fill="none" stroke={T.success} strokeWidth="1.4"
+          <circle key={delay} className="hr-sweep" cx={CX} cy={CY} r={R} fill="none" stroke={CorDisponivel} strokeWidth="1.4"
             style={{ transformOrigin:`${CX}px ${CY}px`, animation:`hrSweep 4.2s ease-out ${delay}s infinite` }}/>
         ))}
 
         {/* raios do centro até cada nó */}
         {nodes.map((n,i)=>(
           <line key={"s"+i} className="hr-spoke" x1={CX} y1={CY} x2={n.x} y2={n.y}
-            stroke={T.success} strokeWidth="0.8"
+            stroke={CorDisponivel} strokeWidth="0.8"
             style={{ animation:`hrSpokeFade ${3+ (i%4)*0.5}s ease-in-out ${i*0.28}s infinite` }}/>
         ))}
 
-        {/* nós das fontes */}
+        {/* pulso de dado viajando fonte → H (loop assíncrono, sentido único) */}
+        {!reduced && nodes.map((n,i)=>(
+          <circle key={"p"+i} className="hr-data-pulse" r="2.2" fill="#fff" opacity="0">
+            <animateMotion dur={`${7+i*0.9}s`} repeatCount="indefinite" begin={`${i*1.1}s`}
+              path={`M ${n.x} ${n.y} L ${CX} ${CY}`}/>
+          </circle>
+        ))}
+
+        {/* nós das fontes — teal = disponível/monitorável, nunca "regular" */}
         {nodes.map((n,i)=>{
           const boost = intensidade(n.x, n.y);
           return (
             <g key={"n"+i}>
-              <circle className="hr-dot-pulse" cx={n.x} cy={n.y} r={8 + boost*5} fill={T.success} filter="url(#hrBlur)"
+              <circle className="hr-dot-pulse" cx={n.x} cy={n.y} r={8 + boost*5} fill={CorDisponivel} filter="url(#hrBlur)"
                 opacity={0.5 + boost*0.4}
                 style={{ transformOrigin:`${n.x}px ${n.y}px`, animation:`hrPulseDot ${2.2+(i%5)*0.35}s ease-in-out ${i*0.4}s infinite` }}/>
-              <circle cx={n.x} cy={n.y} r={2.4 + boost*1.6} fill="#D1FFEB"/>
-              <text x={n.x} y={n.y - 14} textAnchor="middle" fontSize="8.5" fontWeight="700"
-                fill={T.sub} opacity={0.55 + boost*0.45}>{n.label}</text>
+              <circle cx={n.x} cy={n.y} r={2.4 + boost*1.6} fill="#CFF7F0"/>
+              <text x={n.x} y={n.y - 15} textAnchor="middle" fontSize="8.5" fontWeight="700"
+                fill={T.sub} opacity={0.6 + boost*0.4}>{n.label}</text>
             </g>
           );
         })}
 
-        {/* selo central */}
-        <circle className="hr-glow" cx={CX} cy={CY} r="34" fill={T.accent} opacity=".35" filter="url(#hrBlurBig)"
+        {/* selo central — H, núcleo de inteligência do Guardian */}
+        <circle className="hr-glow" cx={CX} cy={CY} r="38" fill={T.accent} opacity=".38" filter="url(#hrBlurBig)"
           style={{ transformOrigin:`${CX}px ${CY}px`, animation:"hrGlowCenter 4s ease-in-out infinite" }}/>
-        <circle cx={CX} cy={CY} r="15" fill="url(#hrGrad)"/>
-        <text x={CX} y={CY+5} textAnchor="middle" fontSize="15" fontWeight="900" fill="#031018">H</text>
+        <circle cx={CX} cy={CY} r="18" fill="url(#hrGrad)"/>
+        <text x={CX} y={CY+5.5} textAnchor="middle" fontSize="17" fontWeight="900" fill="#031018">H</text>
       </svg>
     </div>
   );
 }
 
 // ── Cards flutuantes de fontes verificadas — prova de valor ao lado do mapa
-function LiveCheckCard({ nome, status, detalhe }) {
-  const ok = status === "ok";
-  const color = ok ? T.success : T.warning;
+function LiveCheckCard({ nome, tipo, detalhe }) {
+  // tipo: "disponivel" (grátis, cor teal — não é resultado, é capacidade)
+  //       "guardian" (fonte paga, ícone de cadeado, some ao assinar)
+  const guardian = tipo === "guardian";
+  const color = guardian ? T.muted : T.accent;
   return (
     <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12 }}>
-      <span style={{ fontSize:16, color }}>{ok ? "✓" : "!"}</span>
+      <span style={{ fontSize:14, color }}>{guardian ? "🔒" : "●"}</span>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:10, fontWeight:800, letterSpacing:"0.06em", textTransform:"uppercase", color:T.muted }}>{nome}</div>
         <div style={{ fontSize:12, fontWeight:700, color }}>{detalhe}</div>
@@ -345,9 +362,17 @@ function ScreenLanding({ onStart }) {
         .hh-hero-col{ flex:1; min-width:0; }
         .hh-hero-radar-col{ display:flex; justify-content:center; }
         @media (min-width: 860px){
-          .hh-hero-row{ flex-direction:row; align-items:center; gap:48px; }
-          .hh-hero-col{ max-width:460px; }
-          .hh-hero-radar-col{ flex:1; }
+          .hh-hero-row{ flex-direction:row; align-items:center; gap:40px; }
+          .hh-hero-col{ max-width:480px; flex:0 0 52%; }
+          .hh-hero-radar-col{ flex:0 0 44%; }
+        }
+        .hh-steps{ display:grid; gap:14px; }
+        .hh-pillars{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+        .hh-boundary{ display:grid; gap:10px; }
+        @media (min-width: 760px){
+          .hh-steps{ grid-template-columns:1fr 1fr 1fr; }
+          .hh-pillars{ grid-template-columns:repeat(4,1fr); }
+          .hh-boundary{ grid-template-columns:1fr 1fr 1fr; }
         }
       `}</style>
 
@@ -363,8 +388,9 @@ function ScreenLanding({ onStart }) {
             ))}
           </div>
           <div style={{ flex:1 }}/>
+          <a href="/login" className="hh-nav-links" style={{ fontSize:13, color:T.sub, textDecoration:"none", fontWeight:600, marginRight:8 }}>Entrar</a>
           <button onClick={onStart} style={{ marginLeft:"auto", padding:"9px 16px", borderRadius:10, border:`1px solid ${T.success}`, background:"transparent", color:T.success, fontWeight:700, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>
-            Fazer check-up →
+            Fazer auditoria →
           </button>
         </div>
       </div>
@@ -374,35 +400,35 @@ function ScreenLanding({ onStart }) {
 
           {/* Coluna do texto */}
           <div className="hh-hero-col">
-            <div style={{ display:"inline-flex", alignItems:"center", gap:8, padding:"6px 14px", borderRadius:99, background:T.success+"14", border:`1px solid ${T.success}35`, marginBottom:20 }}>
-              <span style={{ width:7, height:7, borderRadius:"50%", background:T.success }}/>
-              <span style={{ fontSize:11, fontWeight:800, letterSpacing:"0.06em", textTransform:"uppercase", color:T.success }}>O Guardian da sua empresa</span>
+            <div style={{ fontSize:11, fontWeight:800, letterSpacing:"0.1em", textTransform:"uppercase", color:T.accent, marginBottom:14 }}>
+              Auditoria preventiva e monitoramento empresarial
             </div>
 
             <div style={{ fontWeight:900, fontSize:34, lineHeight:1.15, letterSpacing:"-.03em", marginBottom:16 }}>
               Sua empresa está saudável<span style={{ color:T.sub }}>…</span><br/>
               <span style={{ color:T.success }}>ou só parece estar?</span>
             </div>
-            <div style={{ fontSize:16, color:T.sub, lineHeight:1.7, marginBottom:28 }}>
-              Monitoramos continuamente as principais informações da sua empresa e alertamos você
-              antes que pequenos problemas virem grandes prejuízos.
+            <div style={{ fontSize:15, color:T.sub, lineHeight:1.7, marginBottom:24 }}>
+              O Hub Health audita sinais cadastrais, fiscais, trabalhistas e de compliance da sua empresa.
+              O Guardian cruza diferentes fontes, identifica o que merece atenção e ajuda você a acompanhar
+              mudanças ao longo do tempo.
             </div>
 
             <button onClick={onStart} style={{ width:"100%", padding:"16px", borderRadius:14, border:"none", background:`linear-gradient(135deg, ${T.success}, ${T.accent})`, color:"#031018", fontWeight:800, fontSize:16, cursor:"pointer", marginBottom:10 }}>
-              Fazer check-up gratuito →
+              Fazer auditoria gratuita →
             </button>
-            <a href="#demonstracao" style={{ display:"block", textAlign:"center", fontSize:13, color:T.sub, textDecoration:"underline", marginBottom:28 }}>
+            <a href="#demonstracao" style={{ display:"block", textAlign:"center", fontSize:13, color:T.sub, textDecoration:"underline", marginBottom:24 }}>
               Ver exemplo de resultado ↓
             </a>
 
             <div style={{ display:"flex", flexWrap:"wrap", gap:16, marginBottom:8 }}>
               {[
-                ["💳","Sem cartão de crédito"],
-                ["⏱️","Resultado em minutos"],
-                ["🛡️","100% online e seguro"],
+                ["✓","Dados reais"],
+                ["✓","Sem cartão"],
+                ["✓","Fontes verificáveis"],
               ].map(([icon,label],i)=>(
                 <div key={i} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:T.muted }}>
-                  <span>{icon}</span>{label}
+                  <span style={{ color:T.success }}>{icon}</span>{label}
                 </div>
               ))}
             </div>
@@ -421,21 +447,90 @@ function ScreenLanding({ onStart }) {
         </div>
       </div>
 
-      <div style={{ maxWidth:560, margin:"0 auto", padding:"36px 24px 60px" }}>
-        <div style={{ display:"grid", gap:8, marginBottom:12 }}>
-          <LiveCheckCard nome="Receita Federal" status="ok" detalhe="Regular"/>
-          <LiveCheckCard nome="FGTS" status="ok" detalhe="Sem pendências"/>
-          <LiveCheckCard nome="PGFN" status="alerta" detalhe="Débito identificado — ação recomendada"/>
-          <LiveCheckCard nome="Simples Nacional" status="ok" detalhe="Ativo"/>
+      <div style={{ maxWidth:560, margin:"0 auto", padding:"36px 24px 0" }}>
+        <div style={{ display:"grid", gap:8, marginBottom:10 }}>
+          <LiveCheckCard nome="Receita Federal" tipo="disponivel" detalhe="Fonte disponível"/>
+          <LiveCheckCard nome="CEIS / CNEP" tipo="disponivel" detalhe="Consulta disponível"/>
+          <LiveCheckCard nome="PGFN" tipo="guardian" detalhe="Cobertura Guardian"/>
+          <LiveCheckCard nome="FGTS" tipo="guardian" detalhe="Cobertura Guardian"/>
         </div>
-        <div style={{ textAlign:"center", fontSize:12, color:T.muted, lineHeight:1.6, margin:"8px 0 40px" }}>
-          Exemplo ilustrativo — o seu check-up mostra a situação real da sua empresa.
+        <div style={{ textAlign:"center", fontSize:12, color:T.muted, lineHeight:1.6, marginBottom:44 }}>
+          Demonstração das fontes monitoráveis — o seu check-up mostra a situação real, verificada, da sua empresa.
         </div>
+      </div>
 
+      {/* Como funciona */}
+      <div id="como-funciona" style={{ maxWidth:900, margin:"0 auto", padding:"0 24px 56px" }}>
+        <div style={{ fontSize:20, fontWeight:800, marginBottom:6, textAlign:"center" }}>Como funciona</div>
+        <div style={{ fontSize:13, color:T.sub, textAlign:"center", marginBottom:28, maxWidth:480, marginLeft:"auto", marginRight:"auto" }}>
+          Três passos, do CNPJ ao monitoramento contínuo.
+        </div>
+        <div className="hh-steps">
+          {[
+            ["01","Informe o CNPJ","Você não precisa instalar nada nem conectar seu sistema financeiro para começar a auditoria."],
+            ["02","O Hub Health audita","Consultamos as fontes disponíveis e consolidamos tudo num só lugar: o que foi verificado, o status de cada fonte, achados e o que merece atenção."],
+            ["03","O Guardian continua de olho","Ao ativar o Guardian, sua empresa passa a ter monitoramento programado. A cada ciclo, verificamos de novo e avisamos quando algo relevante mudar."],
+          ].map(([num,title,desc],i)=>(
+            <Card key={i} style={{ padding:18 }}>
+              <div style={{ fontSize:11, fontWeight:800, color:T.accent, marginBottom:8 }}>{num}</div>
+              <div style={{ fontWeight:700, fontSize:14, marginBottom:6 }}>{title}</div>
+              <div style={{ fontSize:12, color:T.sub, lineHeight:1.6 }}>{desc}</div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* O que verificamos */}
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"0 24px 56px" }}>
+        <div style={{ fontSize:20, fontWeight:800, marginBottom:6, textAlign:"center" }}>O que o Hub Health verifica</div>
+        <div style={{ fontSize:13, color:T.sub, textAlign:"center", marginBottom:28, maxWidth:480, marginLeft:"auto", marginRight:"auto" }}>
+          Conforme disponibilidade da fonte e do plano.
+        </div>
+        <div className="hh-pillars">
+          {[
+            ["Cadastral","Situação cadastral, dados empresariais, CNAE, QSA."],
+            ["Fiscal e tributário","Dívida Ativa, PGFN, Simples Nacional."],
+            ["Trabalhista","FGTS/CRF, CNDT."],
+            ["Integridade e compliance","CEIS, CNEP."],
+          ].map(([title,desc],i)=>(
+            <Card key={i} style={{ padding:16 }}>
+              <div style={{ fontWeight:700, fontSize:13, marginBottom:6, color:T.accent }}>{title}</div>
+              <div style={{ fontSize:12, color:T.sub, lineHeight:1.5 }}>{desc}</div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Onde o Hub Health entra */}
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"0 24px 56px" }}>
+        <div style={{ fontSize:20, fontWeight:800, marginBottom:6, textAlign:"center" }}>Onde o Hub Health entra</div>
+        <div style={{ fontSize:13, color:T.sub, textAlign:"center", marginBottom:28, maxWidth:520, marginLeft:"auto", marginRight:"auto" }}>
+          Seu ERP registra a operação. Sua contabilidade processa e orienta a rotina contábil.
+          O Hub Health adiciona uma camada de auditoria preventiva e monitoramento.
+        </div>
+        <div className="hh-boundary">
+          {[
+            ["ERP","Operação, vendas, financeiro, notas fiscais.", false],
+            ["Contabilidade","Escrituração, obrigações, apuração e orientação contábil.", false],
+            ["Hub Health","Auditoria preventiva, monitoramento, evidências, alertas e acompanhamento de regularidade.", true],
+          ].map(([title,desc,destaque],i)=>(
+            <Card key={i} style={{ padding:16, border: destaque ? `1px solid ${T.success}44` : undefined }}>
+              <div style={{ fontWeight:700, fontSize:13, marginBottom:6, color: destaque ? T.success : T.text }}>{title}</div>
+              <div style={{ fontSize:12, color:T.sub, lineHeight:1.5 }}>{desc}</div>
+            </Card>
+          ))}
+        </div>
+        <div style={{ textAlign:"center", fontSize:12, color:T.muted, marginTop:20, maxWidth:480, marginLeft:"auto", marginRight:"auto", lineHeight:1.6 }}>
+          O Hub Health não substitui o contador — amplia a capacidade de enxergar alterações e pendências.
+          É contador? O Guardian também pode ajudar a monitorar preventivamente sua carteira de clientes.
+        </div>
+      </div>
+
+      <div style={{ maxWidth:560, margin:"0 auto", padding:"0 24px 60px" }}>
         {/* 4 benefícios */}
         <div id="recursos" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:40 }}>
           {[
-            ["🛡️","Monitore 24/7","Acompanhamento contínuo das principais fontes oficiais."],
+            ["🛡️","Monitore continuamente","Acompanhamento programado das principais fontes do seu plano."],
             ["🔔","Alertas Inteligentes","Se algo mudar, você é avisado na hora."],
             ["📋","Ações Recomendadas","Não é só informação — você recebe o que fazer."],
             ["📊","Decisões Seguras","Clareza pra planejar e crescer com segurança."],
@@ -449,7 +544,7 @@ function ScreenLanding({ onStart }) {
         </div>
 
         <button onClick={onStart} style={{ width:"100%", padding:"16px", borderRadius:14, border:`1px solid ${T.success}`, background:"transparent", color:T.success, fontWeight:700, fontSize:15, cursor:"pointer" }}>
-          Fazer check-up gratuito →
+          Fazer auditoria gratuita →
         </button>
       </div>
     </div>
@@ -731,7 +826,7 @@ function ScreenResult({ audit, onReset }) {
   );
 }
 
-export default function App() {
+function CheckupApp() {
   const [screen, setScreen] = useState("landing");
   const [logs, setLogs] = useState([]);
   const [error, setError] = useState(null);
@@ -770,4 +865,286 @@ export default function App() {
   if (screen==="loading") return <ScreenLoading logs={logs}/>;
   if (screen==="result" && audit) return <ScreenResult audit={audit} onReset={handleReset}/>;
   return <ScreenInput onSubmit={handleSubmit} error={error} onBack={()=>setScreen("landing")}/>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTENTICAÇÃO — sessão em localStorage, sem biblioteca de roteamento externa
+// (router mínimo baseado em window.location, pra não engordar o bundle).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function getSession() {
+  try {
+    const raw = localStorage.getItem("hh_session");
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function setSession(data) { localStorage.setItem("hh_session", JSON.stringify(data)); }
+function clearSession() { localStorage.removeItem("hh_session"); }
+
+async function apiAuth(path, opts = {}) {
+  const session = getSession();
+  const headers = { "Content-Type": "application/json", ...(opts.headers||{}) };
+  if (session?.sessionToken) headers.Authorization = `Bearer ${session.sessionToken}`;
+  const r = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+  if (r.status === 401) { clearSession(); throw new Error("Sessão expirada"); }
+  if (!r.ok) throw new Error(`Erro ${r.status}`);
+  return r.json();
+}
+
+function ScreenLogin() {
+  const [email, setEmail] = useState("");
+  const [enviado, setEnviado] = useState(false);
+  const [verificando, setVerificando] = useState(false);
+  const [erro, setErro] = useState(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (!token) return;
+    setVerificando(true);
+    fetch(`${API_BASE}/v1/auth/verify?token=${encodeURIComponent(token)}`)
+      .then(r => { if (!r.ok) throw new Error("Link inválido ou expirado"); return r.json(); })
+      .then(data => {
+        setSession(data);
+        window.location.href = data.role === "admin" ? "/admin" : "/app";
+      })
+      .catch(e => { setErro(e.message); setVerificando(false); });
+  }, []);
+
+  const enviar = async () => {
+    if (!/\S+@\S+\.\S+/.test(email)) return;
+    try {
+      await fetch(`${API_BASE}/v1/auth/magic-link`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }),
+      });
+      setEnviado(true);
+    } catch { setErro("Não foi possível enviar. Tente novamente."); }
+  };
+
+  if (verificando) {
+    return (
+      <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',-apple-system,sans-serif" }}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:32, marginBottom:12 }}>🔐</div>
+          <div style={{ fontSize:14, color:T.sub }}>{erro || "Verificando seu link…"}</div>
+          {erro && <a href="/login" style={{ color:T.success, fontSize:13, display:"block", marginTop:12 }}>← Tentar de novo</a>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", padding:24, fontFamily:"'Inter',-apple-system,sans-serif" }}>
+      <div style={{ maxWidth:380, width:"100%" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:32, justifyContent:"center" }}>
+          <Logo/><Wordmark/>
+        </div>
+        {!enviado ? (
+          <Card>
+            <div style={{ fontWeight:800, fontSize:17, marginBottom:6 }}>Entrar</div>
+            <div style={{ fontSize:13, color:T.sub, marginBottom:16 }}>Sem senha — a gente manda um link seguro pro seu e-mail.</div>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"
+              style={{ width:"100%", boxSizing:"border-box", padding:"12px 14px", borderRadius:10, background:T.surface2, border:`1px solid ${T.border}`, color:T.text, fontSize:14, marginBottom:12, outline:"none" }}/>
+            <button onClick={enviar} style={{ width:"100%", padding:"12px", borderRadius:10, border:"none", background:T.success, color:"#031018", fontWeight:700, fontSize:14, cursor:"pointer" }}>
+              Enviar link de acesso →
+            </button>
+            {erro && <div style={{ color:T.danger, fontSize:12, marginTop:10 }}>{erro}</div>}
+          </Card>
+        ) : (
+          <Card style={{ textAlign:"center" }}>
+            <div style={{ fontSize:32, marginBottom:10 }}>📩</div>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:6 }}>Verifique seu e-mail</div>
+            <div style={{ fontSize:13, color:T.sub, lineHeight:1.6 }}>Enviamos um link de acesso pra <strong>{email}</strong>. Ele expira em 20 minutos.</div>
+          </Card>
+        )}
+        <a href="/" style={{ display:"block", textAlign:"center", fontSize:12, color:T.muted, marginTop:20 }}>← Voltar pro início</a>
+      </div>
+    </div>
+  );
+}
+
+// ── Portal do Cliente ────────────────────────────────────────────────────
+
+function ScreenCustomerPortal() {
+  const [dados, setDados] = useState(null);
+  const [erro, setErro] = useState(null);
+  const [recheckLoading, setRecheckLoading] = useState(null);
+  const session = getSession();
+
+  const carregar = () => {
+    apiAuth("/v1/customer/dashboard").then(setDados).catch(e => setErro(e.message));
+  };
+  useEffect(() => { if (session) carregar(); }, []);
+
+  if (!session) {
+    return (
+      <div style={{ minHeight:"100vh", background:T.bg, color:T.text, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter',-apple-system,sans-serif" }}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ marginBottom:12 }}>Você precisa entrar para ver sua conta.</div>
+          <a href="/login" style={{ color:T.success, fontWeight:700 }}>Entrar →</a>
+        </div>
+      </div>
+    );
+  }
+
+  const sair = () => { clearSession(); window.location.href = "/"; };
+
+  const recheck = async cnpj => {
+    setRecheckLoading(cnpj);
+    try { await apiAuth(`/v1/customer/recheck/${cnpj}`, { method:"POST" }); carregar(); }
+    catch (e) { setErro(e.message); }
+    setRecheckLoading(null);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'Inter',-apple-system,sans-serif" }}>
+      <div style={{ borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 20px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}><Logo/><Wordmark/></div>
+        <button onClick={sair} style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontSize:12, cursor:"pointer" }}>Sair</button>
+      </div>
+
+      <div style={{ maxWidth:600, margin:"0 auto", padding:"32px 20px 60px" }}>
+        <div style={{ fontSize:20, fontWeight:800, marginBottom:4 }}>Minha conta</div>
+        <div style={{ fontSize:13, color:T.sub, marginBottom:24 }}>{session.email}</div>
+
+        {erro && <div style={{ color:T.danger, fontSize:13, marginBottom:16 }}>{erro}</div>}
+        {!dados ? <div style={{ color:T.sub, fontSize:13 }}>Carregando…</div> : (
+          <>
+            <Card style={{ marginBottom:16 }}>
+              <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", marginBottom:8 }}>Minha assinatura</div>
+              {dados.subscription?.ativo ? (
+                <>
+                  <Chip label="Ativa" color={T.success}/>
+                  <div style={{ fontSize:13, color:T.sub, marginTop:8 }}>Plano Fundador — R$ 19,90/mês</div>
+                  <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>Desde {new Date(dados.subscription.ativadoEm).toLocaleDateString("pt-BR")}</div>
+                </>
+              ) : (
+                <>
+                  <Chip label="Sem assinatura ativa" color={T.muted}/>
+                  <div style={{ fontSize:13, color:T.sub, marginTop:10 }}>Faça um check-up e ative o monitoramento contínuo.</div>
+                  <a href="/" style={{ display:"inline-block", marginTop:10, color:T.success, fontWeight:700, fontSize:13 }}>Fazer check-up →</a>
+                </>
+              )}
+            </Card>
+
+            <div style={{ fontSize:14, fontWeight:700, marginBottom:10 }}>Empresas monitoradas {dados.alertCount>0 && <span style={{ color:T.warning, fontWeight:400, fontSize:12 }}>· {dados.alertCount} alerta(s)</span>}</div>
+            {dados.monitorings.length===0 ? (
+              <Card style={{ textAlign:"center", padding:30, marginBottom:16 }}>
+                <div style={{ fontSize:13, color:T.sub }}>Nenhuma empresa monitorada ainda.</div>
+              </Card>
+            ) : dados.monitorings.map((m,i)=>(
+              <Card key={i} style={{ marginBottom:10 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:14 }}>{m.companyName || m.cnpj}</div>
+                    <div style={{ fontSize:11, color:T.muted }}>{fmtCNPJ(m.cnpj)}</div>
+                  </div>
+                  <Chip label={m.active ? "Monitorando" : "Pausado"} color={m.active ? T.success : T.muted}/>
+                </div>
+                {m.state && <div style={{ fontSize:12, color:T.sub, marginTop:6 }}>{m.state} · score {m.score}/100</div>}
+                <div style={{ fontSize:11, color:T.muted, marginTop:6 }}>
+                  {m.lastCheckAt ? `Última verificação: ${new Date(m.lastCheckAt).toLocaleString("pt-BR")}` : "Ainda sem verificação"}
+                </div>
+                <button onClick={()=>recheck(m.cnpj)} disabled={recheckLoading===m.cnpj}
+                  style={{ marginTop:10, padding:"8px 14px", borderRadius:8, border:`1px solid ${T.success}44`, background:T.success+"12", color:T.success, fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                  {recheckLoading===m.cnpj ? "Verificando…" : "Fazer nova verificação"}
+                </button>
+              </Card>
+            ))}
+
+            {dados.lastAudit && (
+              <Card style={{ marginTop:16 }}>
+                <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", marginBottom:8 }}>Último check-up</div>
+                <div style={{ fontSize:13, color:T.sub }}>{dados.lastAudit.state?.label} — score {dados.lastAudit.state?.score}/100</div>
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Portal Admin ─────────────────────────────────────────────────────────
+
+function ScreenAdminPortal() {
+  const [dados, setDados] = useState(null);
+  const [erro, setErro] = useState(null);
+  const session = getSession();
+
+  useEffect(() => {
+    if (!session) return;
+    apiAuth("/v1/admin/dashboard").then(setDados).catch(e => setErro(e.message));
+  }, []);
+
+  if (!session) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#050709", color:"#ccc", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace" }}>
+        <div><div>Acesso restrito.</div><a href="/login" style={{ color:T.success }}>Entrar →</a></div>
+      </div>
+    );
+  }
+  if (erro === "Erro 403") {
+    return (
+      <div style={{ minHeight:"100vh", background:"#050709", color:"#ccc", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace" }}>
+        <div>Acesso negado — este e-mail não tem permissão de admin.</div>
+      </div>
+    );
+  }
+
+  const sair = () => { clearSession(); window.location.href = "/"; };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#050709", color:"#D6DCE5", fontFamily:"'SF Mono', Menlo, monospace", fontSize:13 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 20px", borderBottom:"1px solid #1A2235" }}>
+        <div style={{ fontWeight:800 }}>Hub Health — Admin</div>
+        <button onClick={sair} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid #333", background:"transparent", color:"#999", cursor:"pointer", fontSize:11 }}>Sair</button>
+      </div>
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"24px 20px" }}>
+        {erro && <div style={{ color:T.danger, marginBottom:16 }}>{erro}</div>}
+        {!dados ? <div style={{ color:"#888" }}>Carregando…</div> : (
+          <>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10, marginBottom:24 }}>
+              {[["Leads", dados.totalLeads],["Assinaturas", dados.totalSubscriptions],["Monitoramentos ativos", dados.activeMonitorings],["Alertas", dados.totalAlerts]].map(([l,v],i)=>(
+                <div key={i} style={{ background:"#0D1117", border:"1px solid #1A2235", borderRadius:10, padding:14 }}>
+                  <div style={{ color:"#666", fontSize:10, textTransform:"uppercase" }}>{l}</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:T.success }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontWeight:700, marginBottom:10 }}>Leads recentes</div>
+            <div style={{ border:"1px solid #1A2235", borderRadius:10, overflow:"hidden" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                <thead><tr style={{ background:"#0D1117" }}>
+                  {["E-mail","CNPJ","Intenção","Modo","Quando"].map(h=>(
+                    <th key={h} style={{ textAlign:"left", padding:"8px 10px", color:"#666", fontWeight:600, fontSize:10, textTransform:"uppercase" }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {dados.recentLeads.slice().reverse().map((l,i)=>(
+                    <tr key={i} style={{ borderTop:"1px solid #1A2235" }}>
+                      <td style={{ padding:"8px 10px" }}>{l.email}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.cnpj || "—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.intent || l.evento || "—"}</td>
+                      <td style={{ padding:"8px 10px" }}>{l.sourceMode || "—"}</td>
+                      <td style={{ padding:"8px 10px", color:"#666" }}>{l.recordedAt ? new Date(l.recordedAt).toLocaleString("pt-BR") : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Router raiz — sem biblioteca externa, baseado em window.location ───────
+export default function App() {
+  const path = typeof window !== "undefined" ? window.location.pathname : "/";
+  if (path.startsWith("/login")) return <ScreenLogin/>;
+  if (path.startsWith("/app")) return <ScreenCustomerPortal/>;
+  if (path.startsWith("/admin")) return <ScreenAdminPortal/>;
+  return <CheckupApp/>;
 }
